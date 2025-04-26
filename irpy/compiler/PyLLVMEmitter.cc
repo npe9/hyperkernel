@@ -38,6 +38,11 @@ static std::string quote(const std::string &s)
     return "'" + s + "'";
 }
 
+static std::string quote(llvm::StringRef s)
+{
+    return quote(s.str());
+}
+
 static std::string nameType(const llvm::Value *val)
 {
     return "itypes.parse_type(ctx," + quote(print(val->getType())) + ")";
@@ -124,9 +129,30 @@ class MetadataVisitor : public llvm::InstVisitor<MetadataVisitor>
             llvm::raw_string_ostream stream{res};
             md->print(stream, &this->module_);
             auto line = stream.str();
-            auto delim = line.find(" = ");
-            auto identifier = std::stoi(line.substr(1, delim));
-            output.push_back(std::make_pair(identifier, line.substr(delim + 3)));
+            
+            // Skip the leading '!' if present
+            size_t start = (line[0] == '!') ? 1 : 0;
+            
+            // Find the first non-digit character
+            size_t end = start;
+            while (end < line.size() && std::isdigit(line[end])) {
+                end++;
+            }
+            
+            // If we found a number, parse it and add the metadata
+            if (end > start) {
+                try {
+                    auto identifier = std::stoi(line.substr(start, end - start));
+                    auto content = line.substr(end);
+                    if (content.size() > 3 && content.substr(0, 3) == " = ") {
+                        content = content.substr(3);
+                    }
+                    output.push_back(std::make_pair(identifier, content));
+                } catch (const std::exception &e) {
+                    // Skip invalid metadata entries
+                    continue;
+                }
+            }
         }
 
         std::sort(output.begin(), output.end());
@@ -226,7 +252,7 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
             return genPyCall("asm", {quote(ia->getAsmString())});
         }
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-        val->dump();
+        llvm::errs() << *val << "\n";
 #endif
         llvm::report_fatal_error("Unhandled value");
     }
@@ -251,7 +277,7 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
             return genPyCall("constant_aggregate_zero", {nameType(ca), quote(name(ca))});
         } else {
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-            c->dump();
+            llvm::errs() << *c << "\n";
 #endif
             llvm::report_fatal_error("Unknown constant type");
         }
@@ -259,8 +285,11 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
 
     std::string visitConstantInt(const llvm::ConstantInt &c)
     {
+        std::string value;
+        llvm::raw_string_ostream stream(value);
+        c.getValue().print(stream, false);
         return genPyCall("constant_int",
-                         {c.getValue().toString(10, false), std::to_string(c.getBitWidth())});
+                         {value, std::to_string(c.getBitWidth())});
     }
 
     std::string visitConstantExpr(const llvm::ConstantExpr *e)
@@ -276,7 +305,11 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
         opstring = e->getOpcodeName();
 
         if (opstring == "icmp") {
-            switch (e->getPredicate()) {
+            auto cmp = llvm::dyn_cast<llvm::ICmpInst>(e);
+            if (!cmp) {
+                llvm::report_fatal_error("ICmp expected");
+            }
+            switch (cmp->getPredicate()) {
             case llvm::CmpInst::Predicate::ICMP_EQ:
                 opstring = "eq";
                 break;
@@ -309,7 +342,7 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
                 break;
             default:
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-                e->dump();
+                llvm::errs() << *e << "\n";
 #endif
                 llvm::report_fatal_error("Unknown icmp predicate");
             }
@@ -329,7 +362,7 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
             break;
         default:
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-            i.dump();
+            llvm::errs() << i << "\n";
 #endif
             llvm::report_fatal_error(">= 2 return operands");
         }
@@ -403,7 +436,7 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
             break;
         default:
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-            i.dump();
+            llvm::errs() << i << "\n";
 #endif
             llvm::report_fatal_error("Unhandled predicate");
         }
@@ -582,7 +615,7 @@ class PyInstVisitor : public llvm::InstVisitor<PyInstVisitor>
     void visitInstruction(const llvm::Instruction &i)
     {
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-        i.dump();
+        llvm::errs() << i << "\n";
 #endif
         llvm::report_fatal_error("Unhandled instruction class");
     }
@@ -609,7 +642,7 @@ void PyLLVMEmitter::emitBasicBlock(llvm::BasicBlock &bb)
     this->genDef("bb_" + getPrintingName(bb, true, *module_), {"pred"},
                    [&]() {
                        PyInstVisitor pv{*this, *module_};
-                       for (auto &instr : bb.getInstList()) {
+                       for (auto &instr : bb) {
                            pv.visit(instr);
                        }
                    });
@@ -642,7 +675,7 @@ void PyLLVMEmitter::emitFunction(llvm::Function &function)
             ++i;
         }
 
-        for (auto &bb : function.getBasicBlockList()) {
+        for (auto &bb : function) {
             this->emitBasicBlock(bb);
         }
 
@@ -713,7 +746,7 @@ void PyLLVMEmitter::emitModule(void)
     this->genDef("_init_globals", {"ctx"},
                    [&]() {
                        this->line("irpy = ctx['eval']");
-                       for (const auto &global : module_->getGlobalList())
+                       for (const auto &global : module_->globals())
                            this->emitGlobalVariable(global);
                    });
 

@@ -84,7 +84,7 @@ include $(PROJECT)/Makefrag
 
 ifeq ($(UNAME_S),Darwin)
 USE_CLANG    ?= 1
-TOOLPREFIX   ?= $(ARCH)-linux-gnu-
+TOOLPREFIX   ?= x86_64-elf-
 endif
 
 ifdef USE_CLANG

@@ -30,9 +30,11 @@ else
 IRPY_CFLAGS :=
 endif
 
+IRPY_CXXFLAGS += -fexceptions
+
 $(O)/irpy/%.o: irpy/%.cc
 	$(Q)$(MKDIR_P) $(@D)
-	$(QUIET_CXX)$(CXX) -o $@ -c $(CXXFLAGS) $(IRPY_CFLAGS) -Wall -g -O2 $<
+	$(QUIET_CXX)$(CXX) -o $@ -c $(CXXFLAGS) $(IRPY_CFLAGS) $(IRPY_CXXFLAGS) -Wall -g -O2 $<
 
 ifeq ($(PROFILE_IRPY), 1)
 IRPY_LDFLAGS := -Wl,--no-as-needed -lprofiler -Wl,--as-needed
